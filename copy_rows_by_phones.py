@@ -1,8 +1,11 @@
 import pandas as pd
 from tqdm import tqdm
-from time import time, strftime, localtime
+from time import strftime, localtime
 from tkinter import Tk, filedialog, simpledialog, ttk
 from colorama import init, Fore, Style
+import re
+import os
+import string
 
 # Инициализация colorama
 init(autoreset=True)
@@ -22,6 +25,10 @@ def select_files():
                                              filetypes=[("Excel files", "*.xlsx *.xls"), ("CSV files", "*.csv"), ("JSON files", "*.json"), ("Text files", "*.txt")])
     return list(file_paths)
 
+def get_column_letter(index):
+    """Возвращает букву столбца для указанного индекса."""
+    return string.ascii_uppercase[index]
+
 def select_column(headers, sheet_name):
     def on_select(event):
         root.quit()
@@ -30,149 +37,62 @@ def select_column(headers, sheet_name):
     root.title(f"Выбор столбца для листа: {sheet_name}")
     label = ttk.Label(root, text=f"Выберите столбец для листа: {sheet_name}:")
     label.pack()
-    combo = ttk.Combobox(root, values=headers)
+
+    # Создаём список с именами столбцов
+    column_options = [f"{get_column_letter(idx)}1: {header}" for idx, header in enumerate(headers)]
+    
+    combo = ttk.Combobox(root, values=column_options)
     combo.bind("<<ComboboxSelected>>", on_select)
     combo.pack()
     center_window(root)
     root.mainloop()
-    selected_column = combo.get()
+    selected_column = combo.get().split(":")[0]  # Берём только имя столбика (например, A1)
     root.destroy()
     return selected_column
 
-def save_file(source_file):
-    root = Tk()
-    root.withdraw()
-    
-    # Генерация имени файла
-    base_name = source_file.split('/')[-1].split('.')[0]  # Получаем имя исходного файла без расширения
-    file_name = f"{base_name}_Filtered.xlsx"
-    
-    # Выбор пути и имени файла для сохранения
-    file_path = filedialog.asksaveasfilename(defaultextension=".xlsx",
-                                            initialfile=file_name,
-                                            filetypes=[("Excel files", "*.xlsx *.xls")],
-                                            title="Сохранить файл как")
-    return file_path
+def generate_save_path(source_file):
+    """Генерация пути для сохранения файла в той же директории с суффиксом _filtered."""
+    dir_name = os.path.dirname(source_file)
+    base_name = os.path.basename(source_file).split('.')[0]  # Имя файла без расширения
+    new_file_name = f"{base_name}_filtered.xlsx"  # Новое имя файла с суффиксом _filtered
+    return os.path.join(dir_name, new_file_name)
 
 def print_with_time(message, color=Fore.WHITE):
     current_time = strftime("%Y-%m-%d %H:%M:%S", localtime())
     print(f"{color}{current_time} - {message}{Style.RESET_ALL}")
 
-def copy_rows_by_city(source_file, sheet_name, column_name, city, file_format):
-    print_with_time(f"Чтение исходного файла {file_format} (лист: {sheet_name})...", color=Fore.BLUE)
-    
-    # Чтение исходного файла
-    if file_format == 'excel':
-        df = pd.read_excel(source_file, sheet_name=sheet_name, header=None)
-    elif file_format == 'csv':
-        df = pd.read_csv(source_file, header=None, encoding='utf-8')
-    elif file_format == 'json':
-        df = pd.read_json(source_file)
-    elif file_format == 'txt':
-        df = pd.read_csv(source_file, sep=txt_separator, header=None, encoding='utf-8')
-    
-    if df.empty:
-        print_with_time(f"Лист {sheet_name} пустой. Нет данных для обработки.", color=Fore.RED)
-        return None
+# Массив номеров для поиска
+phone_numbers = [
+    "920", "980", "951", "900", "930", "952", "9601", "910", "919", "9507", 
+    "906", "903", "9081", "9155", "961", "995", "905", "958", "939", "969", 
+    "9623", "992", "993", "999", "991", "90921", "901", "996", "9296", 
+    "904", "933", "9675", "97761", "953", "984", "966778", "994", "9861", 
+    "98186", "932506", "985657", "923891", "934477", "9821250", "95510006", 
+    "941887530"
+]
 
-    # Ищем первую НЕ пустую строку
-    df = df.dropna(how='all').reset_index(drop=True)
-    
-    if df.empty:
-        print_with_time(f"Лист {sheet_name} содержит только пустые строки.", color=Fore.RED)
-        return None
-    
-    print_with_time("Файл прочитан успешно.", color=Fore.GREEN)
-    
-    # Получение индекса столбца
-    headers = df.iloc[0]
-    if column_name not in headers.values:
-        print_with_time(f"Столбец {column_name} не найден в листе {sheet_name}.", color=Fore.RED)
-        return None
+def clean_phone_number(number):
+    """Удаляет все нецифровые символы из строки и начинает с первой '9'."""
+    cleaned = re.sub(r'\D', '', str(number))  # Убираем все символы, кроме цифр
+    start_index = cleaned.find('9')  # Находим первую '9'
+    return cleaned[start_index:] if start_index != -1 else cleaned
 
-    column_index = headers[headers == column_name].index[0]
-    
-    # Инициализация времени начала
-    start_time = time()
-    
-    # Проход по строкам и копирование соответствующих строк
-    print_with_time("Начало обработки строк...", color=Fore.BLUE)
+def filter_rows_by_phone_numbers(df, column_name, phone_numbers):
     filtered_rows = []
     total_rows = len(df)
+    
+    # Получаем индекс столбца по его буквенной нотации
+    column_index = string.ascii_uppercase.index(column_name[0])
+
     for index, row in tqdm(df.iterrows(), total=total_rows, desc="Обработка строк"):
-        value = row[column_index]
-        if pd.notna(value) and isinstance(value, str) and city in value:
+        value = clean_phone_number(row[column_index])
+        if any(value.startswith(num) for num in phone_numbers):
             filtered_rows.append(row)
-        
-        # Обновление прогресса
-        progress = (index + 1) / total_rows * 100
-        print_with_time(f'Обработано строк: {index + 1} из {total_rows} ({progress:.2f}%)', color=Fore.CYAN)
-    
+
     if filtered_rows:
-        filtered_df = pd.DataFrame(filtered_rows)  # Устанавливаем правильные столбцы
-        return filtered_df
+        return pd.DataFrame(filtered_rows)  # Создаем DataFrame с отфильтрованными строками
     else:
-        print_with_time(f"Нет строк, соответствующих городу {city} в листе {sheet_name}.", color=Fore.RED)
-        return None
-
-def copy_rows_by_city_csv(source_file, column_name, city, sep):
-    print_with_time(f"Чтение исходного файла CSV...", color=Fore.BLUE)
-    
-    # Чтение исходного файла
-    df = pd.read_csv(source_file, sep=sep, encoding='utf-8')
-
-    if df.empty:
-        print_with_time(f"Файл {source_file} пустой. Нет данных для обработки.", color=Fore.RED)
-        return None
-
-    print_with_time("Файл прочитан успешно.", color=Fore.GREEN)
-    
-    # Проверка наличия столбца
-    if column_name not in df.columns:
-        print_with_time(f"Столбец {column_name} не найден в файле {source_file}.", color=Fore.RED)
-        return None
-    
-    # Инициализация времени начала
-    start_time = time()
-    
-    # Проход по строкам и копирование соответствующих строк
-    print_with_time("Начало обработки строк...", color=Fore.BLUE)
-    filtered_rows = df[df[column_name].apply(lambda x: pd.notna(x) and isinstance(x, str) and city in x)]
-    
-    if not filtered_rows.empty:
-        return filtered_rows
-    else:
-        print_with_time(f"Нет строк, соответствующих городу {city}.", color=Fore.RED)
-        return None
-
-def copy_rows_by_city_txt(source_file, column_name, city, sep):
-    print_with_time(f"Чтение исходного файла TXT...", color=Fore.BLUE)
-    
-    # Чтение исходного файла
-    df = pd.read_csv(source_file, sep=sep, encoding='utf-8')
-
-    if df.empty:
-        print_with_time(f"Файл {source_file} пустой. Нет данных для обработки.", color=Fore.RED)
-        return None
-
-    print_with_time("Файл прочитан успешно.", color=Fore.GREEN)
-    
-    # Проверка наличия столбца
-    if column_name not in df.columns:
-        print_with_time(f"Столбец {column_name} не найден в файле {source_file}.", color=Fore.RED)
-        return None
-    
-    # Инициализация времени начала
-    start_time = time()
-    
-    # Проход по строкам и копирование соответствующих строк
-    print_with_time("Начало обработки строк...", color=Fore.BLUE)
-    filtered_rows = df[df[column_name].apply(lambda x: pd.notna(x) and isinstance(x, str) and city in x)]
-    
-    if not filtered_rows.empty:
-        return filtered_rows
-    else:
-        print_with_time(f"Нет строк, соответствующих городу {city}.", color=Fore.RED)
+        print_with_time("Нет строк, соответствующих номерам из списка.", color=Fore.RED)
         return None
 
 if __name__ == "__main__":
@@ -188,6 +108,62 @@ if __name__ == "__main__":
         separator_dialog.withdraw()
         csv_separator = simpledialog.askstring("Сепаратор CSV/TXT", "Введите сепаратор для CSV/TXT файлов:", initialvalue=";")
     
+    # Обработка первого файла для выбора столбца
+    first_file = source_files[0]
+    print_with_time(f"Обработка первого файла для выбора столбца: {first_file}", color=Fore.BLUE)
+
+    # Определение формата файла
+    if first_file.endswith(('.xlsx', '.xls')):
+        file_format = 'excel'
+    elif first_file.endswith('.csv'):
+        file_format = 'csv'
+    elif first_file.endswith('.json'):
+        file_format = 'json'
+    elif first_file.endswith('.txt'):
+        file_format = 'txt'
+    else:
+        print_with_time(f"Неподдерживаемый формат файла: {first_file}", color=Fore.RED)
+        exit()
+
+    # Чтение всех листов (если формат Excel)
+    if file_format == 'excel':
+        xls = pd.ExcelFile(first_file)
+        sheets = xls.sheet_names
+    else:
+        sheets = [None]  # Для CSV, JSON и TXT используем псевдолист
+
+    # Выбор столбца из первого листа или файла
+    sheet_columns = {}
+    
+    for sheet_name in sheets:
+        # Чтение первой НЕ пустой строки для выбора столбца
+        if file_format == 'excel':
+            df_headers = pd.read_excel(first_file, sheet_name=sheet_name, header=None)
+            df_headers = df_headers.dropna(how='all').reset_index(drop=True)
+            
+            if df_headers.empty:
+                print_with_time(f"Лист {sheet_name} содержит только пустые строки. Невозможно выбрать столбец.", color=Fore.RED)
+                exit()
+            
+            headers = df_headers.iloc[0].astype(str).tolist()
+            column_name = select_column(headers, sheet_name)
+            sheet_columns[sheet_name] = column_name
+        elif file_format in ('csv', 'txt'):
+            df_headers = pd.read_csv(first_file, sep=csv_separator, nrows=1, encoding='utf-8')
+            headers = df_headers.columns.astype(str).tolist()
+            column_name = select_column(headers, 'CSV/TXT файл')
+            sheet_columns['Sheet1'] = column_name
+        elif file_format == 'json':
+            df_headers = pd.read_json(first_file, lines=True, nrows=1)
+            headers = df_headers.columns.astype(str).tolist()
+            column_name = select_column(headers, 'JSON файл')
+            sheet_columns['Sheet1'] = column_name
+
+    if not sheet_columns:
+        print_with_time("Не удалось выбрать столбец. Завершение работы.", color=Fore.RED)
+        exit()
+
+    # Применение выбранного столбца ко всем файлам
     for i, source_file in enumerate(source_files, 1):
         print_with_time(f"Обработка файла {i} из {len(source_files)}: {source_file}", color=Fore.BLUE)
 
@@ -204,69 +180,26 @@ if __name__ == "__main__":
             print_with_time(f"Неподдерживаемый формат файла: {source_file}", color=Fore.RED)
             continue
 
-        # Чтение всех листов (если формат Excel)
-        if file_format == 'excel':
-            xls = pd.ExcelFile(source_file)
-            sheets = xls.sheet_names
-        else:
-            sheets = [None]  # Для CSV, JSON и TXT используем псевдолист
-
-        sheet_columns = {}
-        
-        for sheet_name in sheets:
-            # Чтение первой НЕ пустой строки для выбора столбца
-            if file_format == 'excel':
-                df_headers = pd.read_excel(source_file, sheet_name=sheet_name, header=None)
-                df_headers = df_headers.dropna(how='all').reset_index(drop=True)
-                
-                if df_headers.empty:
-                    print_with_time(f"Лист {sheet_name} содержит только пустые строки. Невозможно выбрать столбец.", color=Fore.RED)
-                    continue
-                
-                headers = df_headers.iloc[0].astype(str).tolist()
-                column_name = select_column(headers, sheet_name)
-                sheet_columns[sheet_name] = column_name
-            elif file_format in ('csv', 'txt'):
-                df_headers = pd.read_csv(source_file, sep=csv_separator, nrows=1, encoding='utf-8')
-                headers = df_headers.columns.astype(str).tolist()
-                column_name = select_column(headers, 'CSV/TXT файл')
-                sheet_columns['Sheet1'] = column_name
-            elif file_format == 'json':
-                df_headers = pd.read_json(source_file, lines=True, nrows=1)
-                headers = df_headers.columns.astype(str).tolist()
-                column_name = select_column(headers, 'JSON файл')
-                sheet_columns['Sheet1'] = column_name
-
-        if not sheet_columns:
-            print_with_time(f"Нет доступных столбцов для обработки в файле {source_file}.", color=Fore.RED)
-            continue
-
-        # Ввод города
-        root = Tk()
-        root.withdraw()
-        city = simpledialog.askstring("Введите город", "Введите город для фильтрации:")
-        root.update_idletasks()
-        center_window(root)
-        root.destroy()
-        
-        if not city:
-            print_with_time("Город не был введен. Пропуск файла.", color=Fore.RED)
-            continue
-        
         # Копирование строк и сохранение в новый файл
         for sheet_name, column_name in sheet_columns.items():
             if file_format == 'excel':
-                filtered = copy_rows_by_city(source_file, sheet_name, column_name, city, file_format)
+                df = pd.read_excel(source_file, sheet_name=sheet_name)
             elif file_format == 'csv':
-                filtered = copy_rows_by_city_csv(source_file, column_name, city, csv_separator)
+                df = pd.read_csv(source_file, sep=csv_separator, encoding='utf-8')
             elif file_format == 'json':
-                filtered = copy_rows_by_city(source_file, sheet_name, column_name, city, file_format)
+                df = pd.read_json(source_file, lines=True)
             elif file_format == 'txt':
-                filtered = copy_rows_by_city_txt(source_file, column_name, city, csv_separator)
-            
-            if filtered is not None and not filtered.empty:
-                save_path = save_file(source_file)
-                filtered.to_excel(save_path, index=False)
+                df = pd.read_csv(source_file, sep=csv_separator, encoding='utf-8')
+
+            filtered_df = filter_rows_by_phone_numbers(df, column_name, phone_numbers)
+
+            if filtered_df is not None:
+                save_path = generate_save_path(source_file)
+                if file_format == 'excel':
+                    with pd.ExcelWriter(save_path) as writer:
+                        filtered_df.to_excel(writer, sheet_name=sheet_name, index=False)
+                else:
+                    filtered_df.to_csv(save_path, sep=csv_separator, index=False, encoding='utf-8')
                 print_with_time(f"Файл сохранен: {save_path}", color=Fore.GREEN)
             else:
                 print_with_time(f"Нет строк для сохранения в листе {sheet_name}.", color=Fore.RED)
